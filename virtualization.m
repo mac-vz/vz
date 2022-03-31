@@ -17,7 +17,7 @@ char *copyCString(NSString *nss)
 @implementation Observer
 - (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context;
 {
-    
+
     @autoreleasepool {
         if ([keyPath isEqualToString:@"state"]) {
             int newState = (int)[change[NSKeyValueChangeNewKey] integerValue];
@@ -105,7 +105,7 @@ bool validateVZVirtualMachineConfiguration(void *config, void **error)
 /*!
  @abstract Create a new Virtual machine configuration.
  @param bootLoader Boot loader used when the virtual machine starts.
- 
+
  @param CPUCount Number of CPUs.
  @discussion
     The number of CPUs must be a value between VZVirtualMachineConfiguration.minimumAllowedCPUCount
@@ -113,7 +113,7 @@ bool validateVZVirtualMachineConfiguration(void *config, void **error)
 
  @see VZVirtualMachineConfiguration.minimumAllowedCPUCount
  @see VZVirtualMachineConfiguration.maximumAllowedCPUCount
- 
+
  @param memorySize Virtual machine memory size in bytes.
  @discussion
     The memory size must be a multiple of a 1 megabyte (1024 * 1024 bytes) between VZVirtualMachineConfiguration.minimumAllowedMemorySize
@@ -195,6 +195,12 @@ void setStorageDevicesVZVirtualMachineConfiguration(void *config,
                                                    void *storageDevices)
 {
     [(VZVirtualMachineConfiguration *)config setStorageDevices:[(NSMutableArray *)storageDevices copy]];
+}
+
+void setDirectorySharingVZVirtualMachineConfiguration(void *config,
+                                                     void *directoryConfigs)
+{
+    [(VZVirtualMachineConfiguration *)config setDirectorySharingDevices:[(NSMutableArray *)directoryConfigs copy]];
 }
 
 /*!
@@ -314,7 +320,7 @@ void *newVZFileHandleNetworkDeviceAttachment(int fileDescriptor)
     The configuration is only valid with valid MACAddress and attachment.
 
  @see VZVirtualMachineConfiguration.networkDevices
- 
+
  @param attachment  Base class for a network device attachment.
  @discussion
     A network device attachment defines how a virtual network device interfaces with the host system.
@@ -369,7 +375,23 @@ void *newVZDiskImageStorageDeviceAttachment(const char *diskPath, bool readOnly,
     return [[VZDiskImageStorageDeviceAttachment alloc]
         initWithURL:diskURL
         readOnly:(BOOL)readOnly
+        cachingMode:(VZDiskImageCachingMode)0
+        synchronizationMode:(VZDiskImageSynchronizationMode)VZDiskImageSynchronizationModeFsync
         error:(NSError * _Nullable * _Nullable)error];
+}
+
+void *newVZVirtioDirectorySharingDeviceConfiguration(const char *tagName, const char *folderPath, bool readOnly)
+{
+    NSString *tagNameNSString = [NSString stringWithUTF8String:tagName];
+
+    NSString *folderPathNSString = [NSString stringWithUTF8String:folderPath];
+    NSURL *folderPathURL = [NSURL fileURLWithPath:folderPathNSString];
+
+    VZSharedDirectory *directory = [[VZSharedDirectory alloc] initWithURL:folderPathURL readOnly:(BOOL)readOnly];
+    VZVirtioFileSystemDeviceConfiguration *share_conf = [[VZVirtioFileSystemDeviceConfiguration alloc] initWithTag:tagNameNSString];
+
+    share_conf.share = [[VZSingleDirectoryShare alloc] initWithDirectory:directory];
+    return share_conf;
 }
 
 

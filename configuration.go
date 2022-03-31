@@ -126,6 +126,16 @@ func (v *VirtualMachineConfiguration) SetSocketDevicesVirtualMachineConfiguratio
 	C.setSocketDevicesVZVirtualMachineConfiguration(v.Ptr(), array.Ptr())
 }
 
+// SetSocketDevicesVirtualMachineConfiguration sets list of socket devices. Empty by default.
+func (v *VirtualMachineConfiguration) SetDirectorySharingDevices(cs []DirectorySharingDeviceConfiguration) {
+	ptrs := make([]NSObject, len(cs))
+	for i, val := range cs {
+		ptrs[i] = val
+	}
+	array := convertToNSMutableArray(ptrs)
+	C.setDirectorySharingVZVirtualMachineConfiguration(v.Ptr(), array.Ptr())
+}
+
 // SetStorageDevicesVirtualMachineConfiguration sets list of disk devices. Empty by default.
 func (v *VirtualMachineConfiguration) SetStorageDevicesVirtualMachineConfiguration(cs []StorageDeviceConfiguration) {
 	ptrs := make([]NSObject, len(cs))

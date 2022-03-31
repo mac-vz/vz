@@ -49,6 +49,8 @@ void setSocketDevicesVZVirtualMachineConfiguration(void *config,
                                                    void *socketDevices);
 void setStorageDevicesVZVirtualMachineConfiguration(void *config,
                                                     void *storageDevices);
+void setDirectorySharingVZVirtualMachineConfiguration(void *config,
+                                                    void *directorySharing);
 
 /* Configurations */
 void *newVZFileHandleSerialPortAttachment(int readFileDescriptor, int writeFileDescriptor);
@@ -64,6 +66,7 @@ void *newVZVirtioBlockDeviceConfiguration(void *attachment);
 void *newVZDiskImageStorageDeviceAttachment(const char *diskPath, bool readOnly, void **error);
 void *newVZVirtioTraditionalMemoryBalloonDeviceConfiguration();
 void *newVZVirtioSocketDeviceConfiguration();
+void *newVZVirtioDirectorySharingDeviceConfiguration(const char *tagName, const char *folderPath, bool readOnly);
 void *newVZMACAddress(const char *macAddress);
 void *newRandomLocallyAdministeredVZMACAddress();
 const char *getVZMACAddressString(void *macAddress);
