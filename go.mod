@@ -1,4 +1,4 @@
-module github.com/Code-Hex/vz
+module github.com/mac-vz/vz
 
 go 1.16
 
