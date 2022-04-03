@@ -1,3 +1,7 @@
+NOTE: This fork is used by macvz with latest updates to Virtualization.Framework Apis
+=======
+
+
 vz - Go binding with Apple [Virtualization.framework](https://developer.apple.com/documentation/virtualization?language=objc)
 =======
 
