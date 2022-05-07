@@ -3,37 +3,25 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
-	"github.com/dustin/go-humanize"
-	"net"
-	"net/http"
-	"net/http/pprof"
-	"net/url"
-	"os"
-	"runtime"
-	"strconv"
-	"strings"
-	"time"
-
-	"github.com/containers/gvisor-tap-vsock/pkg/sshclient"
-	"github.com/containers/gvisor-tap-vsock/pkg/transport"
 	"github.com/containers/gvisor-tap-vsock/pkg/types"
 	"github.com/containers/gvisor-tap-vsock/pkg/virtualnetwork"
+	"github.com/gorilla/handlers"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sync/errgroup"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"runtime"
+	"strings"
+	"syscall"
 )
 
 var (
-	debug           bool
-	mtu             int
-	unixgram        *net.UnixConn
-	endpoints       arrayFlags
-	forwardSocket   arrayFlags
-	forwardDest     arrayFlags
-	forwardUser     arrayFlags
-	forwardIdentify arrayFlags
-	pidFile         string
+	debug bool
 )
 
 const (
@@ -41,11 +29,28 @@ const (
 	sshHostPort = "192.168.127.2:22"
 )
 
-func StartProxy(listenDebug bool, macAddr string, vzDataGram *net.UnixConn) {
-	unixgram = vzDataGram
+func vsockListener(tap string) (net.Listener, error) {
+	_ = os.Remove(tap)
+	ln, err := net.Listen("unix", tap)
+	logrus.Infof("listening %s", tap)
+	if err != nil {
+		return nil, err
+	}
+	return ln, nil
+}
+
+func httpListener(network string) (net.Listener, error) {
+	_ = os.Remove(network)
+	ln, err := net.Listen("unix", network)
+	logrus.Infof("listening %s", network)
+	if err != nil {
+		return nil, err
+	}
+	return ln, nil
+}
+
+func StartProxy(network string, listenDebug bool, qemuSocket string) {
 	debug = listenDebug
-	mtu = 1500
-	pidFile = ""
 	ctx, cancel := context.WithCancel(context.Background())
 
 	groupErrs, ctx := errgroup.WithContext(ctx)
@@ -54,48 +59,15 @@ func StartProxy(listenDebug bool, macAddr string, vzDataGram *net.UnixConn) {
 		logrus.SetLevel(logrus.DebugLevel)
 	}
 
-	//Set this as we want Protocol stream to be off
-	protocol := types.BessProtocol
-
-	if c := len(forwardSocket); c != len(forwardDest) || c != len(forwardUser) || c != len(forwardIdentify) {
-		exitWithError(errors.New("-forward-sock, --forward-dest, --forward-user, and --forward-identity must all be specified together, " +
-			"the same number of times, or not at all"))
-	}
-
-	for i := 0; i < len(forwardSocket); i++ {
-		_, err := os.Stat(forwardIdentify[i])
-		if err != nil {
-			exitWithError(errors.Wrapf(err, "Identity file %s can't be loaded", forwardIdentify[i]))
-		}
-	}
-
-	// Create a PID file if requested
-	if len(pidFile) > 0 {
-		f, err := os.Create(pidFile)
-		if err != nil {
-			exitWithError(err)
-		}
-		// Remove the pid-file when exiting
-		defer func() {
-			if err := os.Remove(pidFile); err != nil {
-				logrus.Error(err)
-			}
-		}()
-		pid := os.Getpid()
-		if _, err := f.WriteString(strconv.Itoa(pid)); err != nil {
-			exitWithError(err)
-		}
-	}
-
 	config := types.Configuration{
 		Debug:             debug,
 		CaptureFile:       captureFile(),
-		MTU:               mtu,
+		MTU:               4000,
 		Subnet:            "192.168.127.0/24",
 		GatewayIP:         gatewayIP,
 		GatewayMacAddress: "5a:94:ef:e4:0c:dd",
 		DHCPStaticLeases: map[string]string{
-			"192.168.127.2": macAddr,
+			"192.168.127.2": "5a:94:ef:e4:0c:ee",
 		},
 		Forwards: map[string]string{
 			fmt.Sprintf("127.0.0.1:%d", 2223): sshHostPort,
@@ -115,16 +87,12 @@ func StartProxy(listenDebug bool, macAddr string, vzDataGram *net.UnixConn) {
 				},
 			},
 		},
-		DNSSearchDomains: searchDomains(),
-		NAT: map[string]string{
-			"192.168.127.254": "127.0.0.1",
-		},
 		GatewayVirtualIPs: []string{"192.168.127.254"},
-		Protocol:          protocol,
+		Protocol:          types.HyperKitProtocol,
 	}
 
 	groupErrs.Go(func() error {
-		return run(ctx, groupErrs, &config, endpoints)
+		return run(ctx, groupErrs, &config, network, qemuSocket)
 	})
 
 	// Wait for something to happen
@@ -147,17 +115,6 @@ func StartProxy(listenDebug bool, macAddr string, vzDataGram *net.UnixConn) {
 	//}
 }
 
-type arrayFlags []string
-
-func (i *arrayFlags) String() string {
-	return "my string representation"
-}
-
-func (i *arrayFlags) Set(value string) error {
-	*i = append(*i, value)
-	return nil
-}
-
 func captureFile() string {
 	if !debug {
 		return ""
@@ -165,151 +122,76 @@ func captureFile() string {
 	return "capture.pcap"
 }
 
-func run(ctx context.Context, g *errgroup.Group, configuration *types.Configuration, endpoints []string) error {
+func run(ctx context.Context, g *errgroup.Group, configuration *types.Configuration, endpoint string, qemu string) error {
+	vsockListener, err := vsockListener(qemu)
+	if err != nil {
+		return err
+	}
+
+	errCh := make(chan error)
+
 	vn, err := virtualnetwork.New(configuration)
 	if err != nil {
 		return err
 	}
 	logrus.Info("waiting for clients...")
 
-	for _, endpoint := range endpoints {
-		logrus.Infof("listening %s", endpoint)
-		ln, err := transport.Listen(endpoint)
-		if err != nil {
-			return errors.Wrap(err, "cannot listen")
-		}
-		httpServe(ctx, g, ln, withProfiler(vn))
+	httpListener, err := httpListener(endpoint)
+	if err != nil {
+		return errors.Wrap(err, "cannot listen")
 	}
+	go func() {
+		if httpListener == nil {
+			return
+		}
+		mux := http.NewServeMux()
+		mux.Handle("/network/", http.StripPrefix("/network", vn.Mux()))
+		if err := http.Serve(httpListener, handlers.LoggingHandler(os.Stderr, mux)); err != nil {
+			errCh <- errors.Wrap(err, "api http.Serve failed")
+		}
+	}()
 
-	ln, err := vn.Listen("tcp", fmt.Sprintf("%s:80", gatewayIP))
+	ln, err := vn.Listen("tcp", fmt.Sprintf("%s:80", configuration.GatewayIP))
 	if err != nil {
 		return err
 	}
-	mux := http.NewServeMux()
-	mux.Handle("/services/forwarder/all", vn.Mux())
-	mux.Handle("/services/forwarder/expose", vn.Mux())
-	mux.Handle("/services/forwarder/unexpose", vn.Mux())
-	httpServe(ctx, g, ln, mux)
-
-	if debug {
-		g.Go(func() error {
-		debugLog:
-			for {
-				select {
-				case <-time.After(5 * time.Second):
-					fmt.Printf("%v sent to the VM, %v received from the VM\n", humanize.Bytes(vn.BytesSent()), humanize.Bytes(vn.BytesReceived()))
-				case <-ctx.Done():
-					break debugLog
-				}
-			}
-			return nil
-		})
-	}
-
-	if unixgram != nil {
-
-		g.Go(func() error {
-			<-ctx.Done()
-			if err := unixgram.Close(); err != nil {
-				log.Println("error closing %s: %q", unixgram, err)
-			}
-			return err
-		})
-
-		g.Go(func() error {
-			conn := &UDPConn{unixConn: unixgram}
-
-			return vn.AcceptQemu(ctx, conn)
-		})
-	}
-
-	for i := 0; i < len(forwardSocket); i++ {
-		var (
-			src *url.URL
-			err error
-		)
-		if strings.Contains(forwardSocket[i], "://") {
-			src, err = url.Parse(forwardSocket[i])
-			if err != nil {
-				return err
-			}
-		} else {
-			src = &url.URL{
-				Scheme: "unix",
-				Path:   forwardSocket[i],
-			}
+	go func() {
+		mux := gatewayAPIMux()
+		if err := http.Serve(ln, handlers.LoggingHandler(os.Stderr, mux)); err != nil {
+			errCh <- errors.Wrap(err, "gateway http.Serve failed")
 		}
+	}()
 
-		dest := &url.URL{
-			Scheme: "ssh",
-			User:   url.User(forwardUser[i]),
-			Host:   sshHostPort,
-			Path:   forwardDest[i],
+	networkListener, err := vn.Listen("tcp", fmt.Sprintf("%s:7777", "192.168.127.254"))
+	if err != nil {
+		return err
+	}
+	go func() {
+		mux := networkAPIMux(vn)
+		if err := http.Serve(networkListener, handlers.LoggingHandler(os.Stderr, mux)); err != nil {
+			errCh <- errors.Wrap(err, "host virtual IP http.Serve failed")
 		}
-		j := i
-		g.Go(func() error {
-			defer os.Remove(forwardSocket[j])
-			forward, err := sshclient.CreateSSHForward(ctx, src, dest, forwardIdentify[j], vn)
-			if err != nil {
-				return err
-			}
-			go func() {
-				<-ctx.Done()
-				// Abort pending accepts
-				forward.Close()
-			}()
-		loop:
-			for {
-				select {
-				case <-ctx.Done():
-					break loop
-				default:
-					// proceed
-				}
-				err := forward.AcceptAndTunnel(ctx)
-				if err != nil {
-					logrus.Debugf("Error occurred handling ssh forwarded connection: %q", err)
-				}
-			}
-			return nil
-		})
+	}()
+
+	go func() {
+		mux := http.NewServeMux()
+		mux.Handle(types.ConnectPath, vn.Mux())
+		if err := http.Serve(vsockListener, mux); err != nil {
+			errCh <- errors.Wrap(err, "virtualnetwork http.Serve failed")
+		}
+	}()
+
+	c := make(chan os.Signal, 1)
+
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	select {
+	case <-c:
+		return nil
+	case err := <-errCh:
+		return err
 	}
 
 	return nil
-}
-
-func httpServe(ctx context.Context, g *errgroup.Group, ln net.Listener, mux http.Handler) {
-	g.Go(func() error {
-		<-ctx.Done()
-		return ln.Close()
-	})
-	g.Go(func() error {
-		err := http.Serve(ln, mux)
-		if err != nil {
-			if err != http.ErrServerClosed {
-				return err
-			}
-			return err
-		}
-		return nil
-	})
-}
-
-func withProfiler(vn *virtualnetwork.VirtualNetwork) http.Handler {
-	mux := vn.Mux()
-	if debug {
-		mux.HandleFunc("/debug/pprof/", pprof.Index)
-		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
-		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
-		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
-	}
-	return mux
-}
-
-func exitWithError(err error) {
-	logrus.Infof("Data error", err)
-	logrus.Error(err)
-	os.Exit(1)
 }
 
 func searchDomains() []string {
@@ -335,4 +217,44 @@ func searchDomains() []string {
 		}
 	}
 	return nil
+}
+
+// This API is only exposed in the virtual network (only the VM can reach this).
+// Any process inside the VM can reach it by connecting to gateway.crc.testing:80.
+func gatewayAPIMux() *http.ServeMux {
+	mux := http.NewServeMux()
+	//mux.HandleFunc("/hosts/add", func(w http.ResponseWriter, r *http.Request) {
+	//	acceptJSONStringArray(w, r, func(hostnames []string) error {
+	//		return adminhelper.AddToHostsFile("127.0.0.1", hostnames...)
+	//	})
+	//})
+	//mux.HandleFunc("/hosts/remove", func(w http.ResponseWriter, r *http.Request) {
+	//	acceptJSONStringArray(w, r, func(hostnames []string) error {
+	//		return adminhelper.RemoveFromHostsFile(hostnames...)
+	//	})
+	//})
+	return mux
+}
+
+func networkAPIMux(vn *virtualnetwork.VirtualNetwork) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.Handle("/", vn.Mux())
+	return mux
+}
+
+func acceptJSONStringArray(w http.ResponseWriter, r *http.Request, fun func(hostnames []string) error) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "post only", http.StatusBadRequest)
+		return
+	}
+	var req []string
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := fun(req); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
 }

@@ -4,9 +4,7 @@ import (
 	"github.com/Code-Hex/vz"
 	"github.com/pkg/term/termios"
 	"golang.org/x/sys/unix"
-	"io"
 	l "log"
-	"net"
 	"os"
 	"os/signal"
 	"strings"
@@ -39,6 +37,7 @@ func setRawMode(f *os.File) {
 }
 
 func main() {
+	StartProxy("/Users/balaji/Desktop/GitSource/Otto/vz/example/network.sock", false, "/Users/balaji/Desktop/GitSource/Otto/vz/example/main.sock")
 	file, err := os.Create("./log.log")
 	if err != nil {
 		panic(err)
@@ -81,28 +80,28 @@ func main() {
 	})
 
 	// network
-	hostSock := "/Users/balaji/Desktop/GitSource/Otto/vz/example/server.sock"
-	gram := ListenUnixGram(hostSock)
-	go func() {
-		StartProxy(false, "5a:94:ef:e4:0c:ee", gram)
-	}()
+	//hostSock := "/Users/balaji/Desktop/GitSource/Otto/vz/example/server.sock"
+	//gram := ListenUnixGram(hostSock)
+	//go func() {
+	//	StartProxy(false, "5a:94:ef:e4:0c:ee", gram)
+	//}()
+	//
+	//clientNet := DialUnixGram("/Users/balaji/Desktop/GitSource/Otto/vz/example/client.sock", hostSock)
+	//
+	//fd := GetFdFromConn(clientNet)
+	//
+	//natAttachment := vz.NewFileHandleNetworkDeviceAttachment(fd)
+	//networkConfig := vz.NewVirtioNetworkDeviceConfiguration(natAttachment)
+	//mac, err := net.ParseMAC("5a:94:ef:e4:0c:ee")
+	//if err != nil {
+	//	log.Fatal(err)
+	//}
+	//
+	//networkConfig.SetMACAddress(vz.NewMACAddress(mac))
 
-	clientNet := DialUnixGram("/Users/balaji/Desktop/GitSource/Otto/vz/example/client.sock", hostSock)
-
-	fd := GetFdFromConn(clientNet)
-
-	natAttachment := vz.NewFileHandleNetworkDeviceAttachment(fd)
-	networkConfig := vz.NewVirtioNetworkDeviceConfiguration(natAttachment)
-	mac, err := net.ParseMAC("5a:94:ef:e4:0c:ee")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	networkConfig.SetMACAddress(vz.NewMACAddress(mac))
-
-	config.SetNetworkDevicesVirtualMachineConfiguration([]*vz.VirtioNetworkDeviceConfiguration{
-		networkConfig,
-	})
+	//config.SetNetworkDevicesVirtualMachineConfiguration([]*vz.VirtioNetworkDeviceConfiguration{
+	//	networkConfig,
+	//})
 
 	// entropy
 	entropyConfig := vz.NewVirtioEntropyDeviceConfiguration()
@@ -120,6 +119,11 @@ func main() {
 	storageDeviceConfig := vz.NewVirtioBlockDeviceConfiguration(diskImageAttachment)
 	config.SetStorageDevicesVirtualMachineConfiguration([]vz.StorageDeviceConfiguration{
 		storageDeviceConfig,
+	})
+
+	configuration := vz.NewVZVirtioFileSystemDeviceConfiguration("test", "/Users/balaji", false)
+	config.SetDirectorySharingDevices([]vz.DirectorySharingDeviceConfiguration{
+		configuration,
 	})
 
 	// traditional memory balloon device which allows for managing guest memory. (optional)
@@ -161,26 +165,8 @@ func main() {
 		case newState := <-vm.StateChangedNotify():
 			if newState == vz.VirtualMachineStateRunning {
 				log.Println("start VM is running")
-				listener := vz.NewVirtioSocketListener(func(conn *vz.VirtioSocketConnection, err error) {
-					defer func() {
-						if err := conn.Close(); err != nil {
-							log.Println("closing error", err)
-						}
-					}()
-
-					log.Println("call", err)
-					log.Println("conn", conn.RemoteAddr(), conn.LocalAddr())
-					_, err = io.Copy(log.Writer(), conn)
-					log.Println("err", err)
-				})
-
 				time.Sleep(30 * time.Second)
-				socketDevices := vm.SocketDevices()
-				for _, socketDevice := range socketDevices {
-					log.Println("listen...")
-					socketDevice.SetSocketListenerForPort(listener, 8321)
-					log.Println("done.")
-				}
+				err = ExposeVsock(vm, 1024, "/Users/balaji/Desktop/GitSource/Otto/vz/example/main.sock")
 			}
 			if newState == vz.VirtualMachineStateStopped {
 				log.Println("stopped successfully")
