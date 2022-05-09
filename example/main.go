@@ -1,11 +1,13 @@
 package main
 
 import (
+	"io"
 	l "log"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/Code-Hex/vz"
 	"github.com/pkg/term/termios"
@@ -52,9 +54,9 @@ func main() {
 		"root=/dev/vda",
 	}
 
-	vmlinuz := os.Getenv("VMLINUZ_PATH")
-	initrd := os.Getenv("INITRD_PATH")
-	diskPath := os.Getenv("DISKIMG_PATH")
+	vmlinuz := "/Users/balaji/Desktop/ubuntu-focal-20.04/original/vmlinux"
+	initrd := "/Users/balaji/Desktop/ubuntu-focal-20.04/original/initrd"
+	diskPath := "/Users/balaji/Desktop/ubuntu-focal-20.04/original/ubuntu-20.04-km-disk.img"
 
 	bootLoader := vz.NewLinuxBootLoader(
 		vmlinuz,
@@ -143,6 +145,26 @@ func main() {
 		case newState := <-vm.StateChangedNotify():
 			if newState == vz.VirtualMachineStateRunning {
 				log.Println("start VM is running")
+				listener := vz.NewVirtioSocketListener(func(conn *vz.VirtioSocketConnection, err error) {
+					defer func() {
+						if err := conn.Close(); err != nil {
+							log.Println("closing error", err)
+						}
+					}()
+
+					log.Println("call", err)
+					log.Println("conn", conn.RemoteAddr(), conn.LocalAddr())
+					_, err = io.Copy(log.Writer(), conn)
+					log.Println("err", err)
+				})
+
+				time.Sleep(30 * time.Second)
+				socketDevices := vm.SocketDevices()
+				for _, socketDevice := range socketDevices {
+					log.Println("listen...")
+					socketDevice.SetSocketListenerForPort(listener, 8321)
+					log.Println("done.")
+				}
 			}
 			if newState == vz.VirtualMachineStateStopped {
 				log.Println("stopped successfully")

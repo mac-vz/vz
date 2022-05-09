@@ -23,6 +23,7 @@ bool shouldAcceptNewConnectionHandler(void *listener, void *connection, void *so
 
 /* VZVirtioSocketListener */
 @interface VZVirtioSocketListenerDelegateImpl : NSObject <VZVirtioSocketListenerDelegate>
+@property (retain, readwrite) dispatch_queue_t queue;
 - (BOOL)listener:(VZVirtioSocketListener *)listener shouldAcceptNewConnection:(VZVirtioSocketConnection *)connection fromSocketDevice:(VZVirtioSocketDevice *)socketDevice;
 @end
 
