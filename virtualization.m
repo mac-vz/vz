@@ -43,6 +43,52 @@ char *copyCString(NSString *nss)
 }
 @end
 
+static BOOL connected(int fd)
+{
+    return fd > 0;
+}
+
+static NSData* readStatic(int fd, int length)
+{
+    NSFileHandle *handle = [[NSFileHandle alloc] initWithFileDescriptor:fd];
+    NSData *data = [handle readDataOfLength:length];
+    return data;
+}
+
+static void writeStatic(int fd, NSData* data)
+{
+    NSFileHandle *handle = [[NSFileHandle alloc] initWithFileDescriptor:fd];
+    [handle writeData:data];
+}
+
+@interface VZVirtioSocketListenerImpl : VZVirtioSocketListener
+
+@property (retain, readwrite) dispatch_queue_t queue;
+
+@end
+
+@implementation VZVirtioSocketListenerImpl : VZVirtioSocketListener
+- (BOOL)listener:(VZVirtioSocketListener *)listener shouldAcceptNewConnection:(VZVirtioSocketConnection *)connection fromSocketDevice:(VZVirtioSocketDevice *)socketDevice;
+{
+    if(self.queue == NULL) {
+        self.queue = dispatch_queue_create("Secondary queue", NULL);
+    }
+    NSLog(@"In Accept\n");
+    NSLog(@"Connection %@\n", connection);
+    dispatch_async(self.queue, ^{
+        NSLog(@"Data %@\n", readStatic(connection.fileDescriptor, 4000));
+        });
+    return true;
+}
+@end
+
+VZVirtioSocketListener *newVZVirtioSocketListener(VZVirtioSocketListenerImpl *delegate)
+{
+    VZVirtioSocketListener *ret = [[VZVirtioSocketListener alloc] init];
+    ret.delegate = (id<VZVirtioSocketListenerDelegate>)delegate;
+    return ret;
+}
+
 /*!
  @abstract Create a VZLinuxBootLoader with the Linux kernel passed as URL.
  @param kernelPath  Path of Linux kernel on the local file system.
