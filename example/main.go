@@ -81,17 +81,22 @@ func main() {
 	})
 
 	// network
-	hostSock := "/Users/balaji/Desktop/GitSource/Otto/vz/example/server.sock"
-	gram := ListenUnixGram(hostSock)
+	socketpair, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_DGRAM, 0)
+	if err != nil {
+		log.Fatal("Unable to create sockets", err)
+	}
+
+	conn := FDConnection{
+		FD:    socketpair[0],
+		File:  os.NewFile(uintptr(socketpair[0]), "socket"),
+		LAddr: net.UnixAddr{Name: "server.sock", Net: "unixgram"},
+		RAddr: net.UnixAddr{Name: "client.sock", Net: "unixgram"},
+	}
 	go func() {
-		StartProxy(false, "5a:94:ef:e4:0c:ee", gram)
+		StartProxy(false, "5a:94:ef:e4:0c:ee", &conn)
 	}()
 
-	clientNet := DialUnixGram("/Users/balaji/Desktop/GitSource/Otto/vz/example/client.sock", hostSock)
-
-	fd := GetFdFromConn(clientNet)
-
-	natAttachment := vz.NewFileHandleNetworkDeviceAttachment(fd)
+	natAttachment := vz.NewFileHandleNetworkDeviceAttachment(socketpair[1])
 	networkConfig := vz.NewVirtioNetworkDeviceConfiguration(natAttachment)
 	mac, err := net.ParseMAC("5a:94:ef:e4:0c:ee")
 	if err != nil {
@@ -120,6 +125,11 @@ func main() {
 	storageDeviceConfig := vz.NewVirtioBlockDeviceConfiguration(diskImageAttachment)
 	config.SetStorageDevicesVirtualMachineConfiguration([]vz.StorageDeviceConfiguration{
 		storageDeviceConfig,
+	})
+
+	configuration := vz.NewVZVirtioFileSystemDeviceConfiguration("/Users/balaji", "/Users/balaji", false)
+	config.SetDirectorySharingDevices([]vz.DirectorySharingDeviceConfiguration{
+		configuration,
 	})
 
 	// traditional memory balloon device which allows for managing guest memory. (optional)

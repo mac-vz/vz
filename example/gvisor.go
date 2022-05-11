@@ -8,14 +8,11 @@ import (
 	"net"
 	"net/http"
 	"net/http/pprof"
-	"net/url"
 	"os"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/containers/gvisor-tap-vsock/pkg/sshclient"
 	"github.com/containers/gvisor-tap-vsock/pkg/transport"
 	"github.com/containers/gvisor-tap-vsock/pkg/types"
 	"github.com/containers/gvisor-tap-vsock/pkg/virtualnetwork"
@@ -25,15 +22,10 @@ import (
 )
 
 var (
-	debug           bool
-	mtu             int
-	unixgram        *net.UnixConn
-	endpoints       arrayFlags
-	forwardSocket   arrayFlags
-	forwardDest     arrayFlags
-	forwardUser     arrayFlags
-	forwardIdentify arrayFlags
-	pidFile         string
+	debug     bool
+	mtu       int
+	unixgram  net.Conn
+	endpoints arrayFlags
 )
 
 const (
@@ -41,11 +33,10 @@ const (
 	sshHostPort = "192.168.127.2:22"
 )
 
-func StartProxy(listenDebug bool, macAddr string, vzDataGram *net.UnixConn) {
+func StartProxy(listenDebug bool, macAddr string, vzDataGram net.Conn) {
 	unixgram = vzDataGram
 	debug = listenDebug
 	mtu = 1500
-	pidFile = ""
 	ctx, cancel := context.WithCancel(context.Background())
 
 	groupErrs, ctx := errgroup.WithContext(ctx)
@@ -56,36 +47,6 @@ func StartProxy(listenDebug bool, macAddr string, vzDataGram *net.UnixConn) {
 
 	//Set this as we want Protocol stream to be off
 	protocol := types.BessProtocol
-
-	if c := len(forwardSocket); c != len(forwardDest) || c != len(forwardUser) || c != len(forwardIdentify) {
-		exitWithError(errors.New("-forward-sock, --forward-dest, --forward-user, and --forward-identity must all be specified together, " +
-			"the same number of times, or not at all"))
-	}
-
-	for i := 0; i < len(forwardSocket); i++ {
-		_, err := os.Stat(forwardIdentify[i])
-		if err != nil {
-			exitWithError(errors.Wrapf(err, "Identity file %s can't be loaded", forwardIdentify[i]))
-		}
-	}
-
-	// Create a PID file if requested
-	if len(pidFile) > 0 {
-		f, err := os.Create(pidFile)
-		if err != nil {
-			exitWithError(err)
-		}
-		// Remove the pid-file when exiting
-		defer func() {
-			if err := os.Remove(pidFile); err != nil {
-				logrus.Error(err)
-			}
-		}()
-		pid := os.Getpid()
-		if _, err := f.WriteString(strconv.Itoa(pid)); err != nil {
-			exitWithError(err)
-		}
-	}
 
 	config := types.Configuration{
 		Debug:             debug,
@@ -98,7 +59,7 @@ func StartProxy(listenDebug bool, macAddr string, vzDataGram *net.UnixConn) {
 			"192.168.127.2": macAddr,
 		},
 		Forwards: map[string]string{
-			fmt.Sprintf("127.0.0.1:%d", 2223): sshHostPort,
+			fmt.Sprintf("127.0.0.1:%d", 2222): sshHostPort,
 		},
 		DNS: []types.Zone{
 			{
@@ -124,7 +85,9 @@ func StartProxy(listenDebug bool, macAddr string, vzDataGram *net.UnixConn) {
 	}
 
 	groupErrs.Go(func() error {
-		return run(ctx, groupErrs, &config, endpoints)
+		err := run(ctx, groupErrs, &config, []string{"unix:///Users/balaji/Desktop/GitSource/Otto/vz/example/vm.sock"})
+		fmt.Printf("Context done", err)
+		return err
 	})
 
 	// Wait for something to happen
@@ -217,61 +180,8 @@ func run(ctx context.Context, g *errgroup.Group, configuration *types.Configurat
 		})
 
 		g.Go(func() error {
-			conn := &UDPConn{unixConn: unixgram}
-
-			return vn.AcceptQemu(ctx, conn)
-		})
-	}
-
-	for i := 0; i < len(forwardSocket); i++ {
-		var (
-			src *url.URL
-			err error
-		)
-		if strings.Contains(forwardSocket[i], "://") {
-			src, err = url.Parse(forwardSocket[i])
-			if err != nil {
-				return err
-			}
-		} else {
-			src = &url.URL{
-				Scheme: "unix",
-				Path:   forwardSocket[i],
-			}
-		}
-
-		dest := &url.URL{
-			Scheme: "ssh",
-			User:   url.User(forwardUser[i]),
-			Host:   sshHostPort,
-			Path:   forwardDest[i],
-		}
-		j := i
-		g.Go(func() error {
-			defer os.Remove(forwardSocket[j])
-			forward, err := sshclient.CreateSSHForward(ctx, src, dest, forwardIdentify[j], vn)
-			if err != nil {
-				return err
-			}
-			go func() {
-				<-ctx.Done()
-				// Abort pending accepts
-				forward.Close()
-			}()
-		loop:
-			for {
-				select {
-				case <-ctx.Done():
-					break loop
-				default:
-					// proceed
-				}
-				err := forward.AcceptAndTunnel(ctx)
-				if err != nil {
-					logrus.Debugf("Error occurred handling ssh forwarded connection: %q", err)
-				}
-			}
-			return nil
+			fmt.Printf("Starting connection")
+			return vn.AcceptQemu(ctx, unixgram)
 		})
 	}
 
