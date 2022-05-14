@@ -82,13 +82,20 @@ func main() {
 
 	// network
 	socketpair, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_DGRAM, 0)
+	serverFD := socketpair[0]
+	clientFD := socketpair[1]
+
+	syscall.SetsockoptInt(serverFD, syscall.SOL_SOCKET, syscall.SO_RCVBUF, 1*1024*1024);
+	syscall.SetsockoptInt(serverFD, syscall.SOL_SOCKET, syscall.SO_SNDBUF, 1*1024*1024);
+	syscall.SetsockoptInt(clientFD, syscall.SOL_SOCKET, syscall.SO_RCVBUF, 1*1024*1024);
+	syscall.SetsockoptInt(clientFD, syscall.SOL_SOCKET, syscall.SO_SNDBUF, 1*1024*1024);
 	if err != nil {
 		log.Fatal("Unable to create sockets", err)
 	}
 
 	conn := FDConnection{
-		FD:    socketpair[0],
-		File:  os.NewFile(uintptr(socketpair[0]), "socket"),
+		FD:    serverFD,
+		File:  os.NewFile(uintptr(serverFD), "socket"),
 		LAddr: net.UnixAddr{Name: "server.sock", Net: "unixgram"},
 		RAddr: net.UnixAddr{Name: "client.sock", Net: "unixgram"},
 	}
@@ -96,7 +103,7 @@ func main() {
 		StartProxy(false, "5a:94:ef:e4:0c:ee", &conn)
 	}()
 
-	natAttachment := vz.NewFileHandleNetworkDeviceAttachment(socketpair[1])
+	natAttachment := vz.NewFileHandleNetworkDeviceAttachment(clientFD)
 	networkConfig := vz.NewVirtioNetworkDeviceConfiguration(natAttachment)
 	mac, err := net.ParseMAC("5a:94:ef:e4:0c:ee")
 	if err != nil {
