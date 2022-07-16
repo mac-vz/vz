@@ -4,7 +4,9 @@ import (
 	"io"
 	l "log"
 	"os"
+	"os/exec"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -81,7 +83,25 @@ func main() {
 	})
 
 	// network
-	natAttachment := vz.NewNATNetworkDeviceAttachment()
+	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_DGRAM, 0)
+
+	vmFD := fds[0]
+	softnetFD := fds[1]
+
+	err = setSocketBuffers(vmFD, 1*1024*1024)
+	if err != nil {
+		return
+	}
+	err = setSocketBuffers(softnetFD, 1*1024*1024)
+	if err != nil {
+		return
+	}
+
+	command := exec.Command("/Users/balaji/Desktop/GitSource/Otto/libslirp-rs/target/debug/slirp-helper", "--fd", strconv.Itoa(unix.Stdin))
+	command.Stdin = os.NewFile(uintptr(softnetFD), "test")
+	go command.Run()
+
+	natAttachment := vz.NewFileHandleNetworkDeviceAttachment(vmFD)
 	networkConfig := vz.NewVirtioNetworkDeviceConfiguration(natAttachment)
 	config.SetNetworkDevicesVirtualMachineConfiguration([]*vz.VirtioNetworkDeviceConfiguration{
 		networkConfig,
@@ -178,4 +198,17 @@ func main() {
 	// vm.Resume(func(err error) {
 	// 	fmt.Println("in resume:", err)
 	// })
+}
+
+func setSocketBuffers(fd int, sizeBytes int) error {
+	ret := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, sizeBytes)
+	if ret != nil {
+		return ret
+	}
+
+	ret = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_SNDBUF, sizeBytes)
+	if ret != nil {
+		return ret
+	}
+	return nil
 }
