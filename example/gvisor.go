@@ -85,7 +85,7 @@ func StartProxy(listenDebug bool, macAddr string, vzDataGram net.Conn) {
 	}
 
 	groupErrs.Go(func() error {
-		err := run(ctx, groupErrs, &config, []string{"unix:///Users/balaji/Desktop/GitSource/Otto/vz/example/vm.sock"})
+		err := run(ctx, groupErrs, &config, []string{"unix:///Users/balaji/Desktop/GitSource/Personal/vz/example/vm.sock"})
 		fmt.Printf("Context done", err)
 		return err
 	})
